@@ -1,0 +1,84 @@
+name: 批量检测网站是否使用Cloudflare (断点续传与防冲突版)
+
+# 触发条件配置
+on:
+  # 支持手动在 GitHub 页面上点击按钮触发运行
+  workflow_dispatch:
+  
+  # 定时触发配置
+  # 设置为每天只跑一次。这里的 0 16 * * * 表示每天 UTC 时间 16 点（即北京时间每天凌晨 0 点）运行
+  schedule:
+    - cron: '0 16 * * *'
+
+# 给予工作流对仓库的写入权限，用于保存结果、进度和域名名单
+permissions:
+  contents: write
+
+jobs:
+  run-detection:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 第一步：下载仓库代码，使用 fetch-depth: 0 获取完整历史，为后续防冲突合并做准备
+    - name: 检出仓库代码
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    # 第二步：在启用缓存前，检查并自动生成 requirements.txt
+    - name: 检查并生成依赖文件
+      run: |
+        if [ ! -f requirements.txt ]; then
+          echo "未检测到 requirements.txt，正在自动生成..."
+          # requests 会自带 urllib3，因此直接声明 requests 即可
+          echo "requests==2.31.0" > requirements.txt
+        else
+          echo "requirements.txt 已存在。"
+        fi
+
+    # 第三步：设置 Python 环境并启用原生依赖缓存 (此时已有 requirements.txt 供其读取)
+    - name: 设置 Python 环境并启用缓存
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip' # 自动缓存 pip 下载的依赖包，后续运行无需重复下载
+
+    # 第四步：安装 Python 脚本所需的依赖库
+    - name: 安装项目依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    # 第五步：执行 Python 检测脚本
+    - name: 运行检测脚本
+      run: |
+        python check_cf.py
+
+    # 第六步：将结果提交并推送，包含防冲突处理
+    - name: 提交并推送结果到仓库 (防冲突处理)
+      run: |
+        # 配置 Git 提交者的身份信息
+        git config --local user.email "actions@github.com"
+        git config --local user.name "GitHub Actions"
+        
+        # 核心容错优化：在提交前先拉取远端最新代码并变基
+        # 将中文变量名改为英文字符，解决 command not found 报错
+        CURRENT_BRANCH=$(git branch --show-current)
+        if [ -n "$CURRENT_BRANCH" ]; then
+          git pull --rebase origin "$CURRENT_BRANCH" || echo "同步远端代码失败，将尝试继续执行"
+        fi
+        
+        # 将可能发生变化或新生成的文件加入暂存区（如果文件不存在则忽略报错）
+        if [ -f result.csv ]; then git add result.csv; fi
+        if [ -f progress.txt ]; then git add progress.txt; fi
+        if [ -f domains.txt ]; then git add domains.txt; fi
+        if [ -f requirements.txt ]; then git add requirements.txt; fi
+        
+        # 判断是否有内容更新，防止没有变化时提交报错
+        if ! git diff --cached --quiet; then
+          git commit -m "自动更新: 追加检测结果, 更新进度与域名名单 [工作流自动提交]"
+          git push
+          echo "结果、进度和域名名单已成功更新并推送到仓库。"
+        else
+          echo "检测结果和进度没有发生变化，无需提交。"
+        fi
