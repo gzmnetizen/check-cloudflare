@@ -13,9 +13,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 输入文件 = 'domains.txt'
 输出文件 = 'result.csv'
 进度文件 = 'progress.txt'
-每次检测数量 = 2000
+每次检测数量 = 20000
 # 第一次运行时自动下载的域名数量（提取前10万个）
-初始下载数量 = 100000
+初始下载数量 = 1000000
 # GitHub Actions 网络极佳，可将并发数调高以显著加快检测速度
 最大并发数 = 30 
 
