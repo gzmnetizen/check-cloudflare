@@ -14,8 +14,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 输出文件 = 'result.csv'
 进度文件 = 'progress.txt'
 每次检测数量 = 10000
-# 第一次运行时自动下载的域名数量（提取前10万个）
-初始下载数量 = 100000
+# 第一次运行时自动下载的域名数量（提取前100万个）
+初始下载数量 = 1000000
 # GitHub Actions 网络极佳，可将并发数调高以显著加快检测速度
 最大并发数 = 30 
 
@@ -71,13 +71,12 @@ def 发送极速安全请求(url):
     极速侦测模式：最大等待时间 500ms (0.5秒)。
     超时即抛弃，不做任何过多停留，确保大部队进度。
     """
-    for 尝试次数 in range(2): # 总共尝试 2 次 (失败重试 1 次)
+    for 尝试次数 in range(2): 
         try:
-            # 【核心修改】：将 timeout 设置为 0.5，严格控制单次网络通讯上限为 500ms
             响应 = requests.get(url, headers=全局请求头, timeout=0.5, allow_redirects=True, verify=False, stream=True)
             return 响应
         except requests.exceptions.RequestException:
-            pass # 发生超时(超过500ms)或连接错误则直接进入下一次尝试或放弃
+            pass 
     return None
 
 def 检测_cloudflare(域名):
@@ -96,7 +95,6 @@ def 检测_cloudflare(域名):
     响应 = 发送极速安全请求(https_链接)
     
     if 响应 is None:
-        # 如果 HTTPS 极速探测失败，降级尝试 HTTP
         响应 = 发送极速安全请求(http_链接)
         采用协议 = "HTTP"
 
@@ -133,6 +131,46 @@ def 保存当前进度(新进度):
     with open(进度文件, 'w', encoding='utf-8') as 文件:
         文件.write(str(新进度))
 
+def 结果文件去重(目标文件):
+    """
+    【新增功能】对目标 CSV 文件依据“域名”列进行精准去重，确保结果纯净。
+    """
+    if not os.path.exists(目标文件):
+        return
+
+    print(f"正在对 {目标文件} 执行去重和清理操作...")
+    已存在域名 = set()
+    去重后的行 = []
+    表头 = None
+
+    try:
+        # 第一步：读取并筛选唯一值
+        with open(目标文件, 'r', encoding='utf-8-sig') as 文件:
+            读取器 = csv.reader(文件)
+            try:
+                表头 = next(读取器) # 提取表头
+            except StopIteration:
+                return # 文件为空，直接返回
+
+            for 行 in 读取器:
+                if not 行: # 跳过空行
+                    continue
+                域名 = 行[0]
+                # 只有未见过的域名才加入结果列表
+                if 域名 not in 已存在域名:
+                    已存在域名.add(域名)
+                    去重后的行.append(行)
+
+        # 第二步：将去重后的纯净数据覆盖写入
+        with open(目标文件, 'w', newline='', encoding='utf-8-sig') as 文件:
+            写入器 = csv.writer(文件)
+            写入器.writerow(表头)
+            写入器.writerows(去重后的行)
+
+        print(f"去重完成！去除冗余后，当前 {目标文件} 中共保留 {len(去重后的行)} 条有效记录。")
+    except Exception as e:
+        print(f"去重操作发生异常: {e}")
+
 def 主程序():
     下载并生成域名列表()
 
@@ -167,8 +205,8 @@ def 主程序():
             if 结果 and 结果[1] == "是":
                 结果列表.append(结果)
 
-    # 写入结果
-    写入模式 = 'w' if 当前起始位置 == 0 else 'a'
+    # 写入本次新增结果
+    写入模式 = 'w' if 当前起始位置 == 0 and not os.path.exists(输出文件) else 'a'
     with open(输出文件, 写入模式, newline='', encoding='utf-8-sig') as 结果文件:
         写入器 = csv.writer(结果文件)
         if 写入模式 == 'w':
@@ -176,11 +214,15 @@ def 主程序():
         if 结果列表:
             写入器.writerows(结果列表)
         
+    # 保存进度
     保存当前进度(当前结束位置)
     
+    # 【新增动作】执行全局去重
+    结果文件去重(输出文件)
+    
     print(f"====== 本次检测任务结束 ======")
-    print(f"发现接入 Cloudflare 的目标: {len(结果列表)} 个")
-    print(f"数据已追加至: {输出文件}")
+    print(f"本次运行发现接入 Cloudflare 的新目标: {len(结果列表)} 个")
+    print(f"数据已同步至: {输出文件}")
     print(f"当前进度已更新为: {当前结束位置}")
 
 if __name__ == "__main__":
