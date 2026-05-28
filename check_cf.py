@@ -5,6 +5,7 @@ import csv
 import os
 import zipfile
 import io
+import time  # 新增时间模块，用于软超时控制
 
 # 禁用 requests 忽略 SSL 验证时产生的安全警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -13,10 +14,15 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 输入文件 = 'domains.txt'
 输出文件 = 'result.csv'
 进度文件 = 'progress.txt'
-每次检测数量 = 20000
-# 第一次运行时自动下载的域名数量（提取前100万个）
+
+# 【策略升级】可以将每次检测数量设置极大，因为有了软超时防御
+每次检测数量 = 20000  
+# 【防御策略1】分块存档：每处理完 1000 个域名就保存一次进度到硬盘，防崩溃
+分块大小 = 1000 
+# 【防御策略2】脚本最大安全存活时间：8.5分钟 (510秒)，留1.5分钟给Git推送
+最大安全运行时间 = 510 
+
 初始下载数量 = 1000000
-# GitHub Actions 网络极佳，可将并发数调高以显著加快检测速度
 最大并发数 = 30 
 
 # 全局请求头设置
@@ -25,9 +31,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 }
 
 def 下载并生成域名列表():
-    """
-    如果不存在 domains.txt，则从 Tranco 自动下载最新的全球 Top 1M 列表并提取前 100万个
-    """
     if os.path.exists(输入文件):
         return
 
@@ -35,18 +38,14 @@ def 下载并生成域名列表():
     try:
         url = "https://tranco-list.eu/top-1m.csv.zip"
         请求头 = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        # 下载列表文件不受 500ms 限制，保持 30 秒超时以确保下载完整
         响应 = requests.get(url, headers=请求头, stream=True, timeout=30)
         响应.raise_for_status()
 
         print("下载完成，正在解压并寻找 CSV 文件...")
-        
         with zipfile.ZipFile(io.BytesIO(响应.content)) as 压缩包:
             csv_文件名 = next((名字 for 名字 in 压缩包.namelist() if 名字.endswith('.csv')), None)
-            
             if not csv_文件名:
                 raise ValueError("未在压缩包中找到 .csv 结尾的数据文件。")
-                
             with 压缩包.open(csv_文件名) as 文件:
                 所有行 = 文件.read().decode('utf-8').splitlines()
 
@@ -59,18 +58,13 @@ def 下载并生成域名列表():
         with open(输入文件, 'w', encoding='utf-8') as 文件:
             for 域名 in 提取的域名:
                 文件.write(域名 + '\n')
-                
         print(f"成功获取并保存了 {len(提取的域名)} 个域名至 {输入文件}！")
-        
     except Exception as 错误:
         print(f"自动下载域名列表失败: {错误}")
         exit(1)
 
 def 发送极速安全请求(url):
-    """
-    极速侦测模式：最大等待时间 500ms (0.5秒)。
-    超时即抛弃，不做任何过多停留，确保大部队进度。
-    """
+    """极速侦测：最大等待时间 500ms。超时即抛弃。"""
     for 尝试次数 in range(2): 
         try:
             响应 = requests.get(url, headers=全局请求头, timeout=0.5, allow_redirects=True, verify=False, stream=True)
@@ -80,9 +74,6 @@ def 发送极速安全请求(url):
     return None
 
 def 检测_cloudflare(域名):
-    """
-    检测单个域名是否使用了 Cloudflare CDN
-    """
     if not 域名:
         return None
 
@@ -115,7 +106,6 @@ def 检测_cloudflare(域名):
     return [域名, 使用了_cf, 响应.status_code, "正常"]
 
 def 获取当前进度():
-    """从进度文件中读取上次检测到的行数"""
     if os.path.exists(进度文件):
         with open(进度文件, 'r', encoding='utf-8') as 文件:
             try:
@@ -127,51 +117,40 @@ def 获取当前进度():
     return 0
 
 def 保存当前进度(新进度):
-    """将新的进度行数写入进度文件"""
     with open(进度文件, 'w', encoding='utf-8') as 文件:
         文件.write(str(新进度))
 
 def 结果文件去重(目标文件):
-    """
-    【新增功能】对目标 CSV 文件依据“域名”列进行精准去重，确保结果纯净。
-    """
     if not os.path.exists(目标文件):
         return
-
-    print(f"正在对 {目标文件} 执行去重和清理操作...")
+    print(f"正在对 {目标文件} 执行全局去重和清理操作...")
     已存在域名 = set()
     去重后的行 = []
     表头 = None
-
     try:
-        # 第一步：读取并筛选唯一值
         with open(目标文件, 'r', encoding='utf-8-sig') as 文件:
             读取器 = csv.reader(文件)
             try:
-                表头 = next(读取器) # 提取表头
+                表头 = next(读取器)
             except StopIteration:
-                return # 文件为空，直接返回
-
+                return
             for 行 in 读取器:
-                if not 行: # 跳过空行
-                    continue
+                if not 行: continue
                 域名 = 行[0]
-                # 只有未见过的域名才加入结果列表
                 if 域名 not in 已存在域名:
                     已存在域名.add(域名)
                     去重后的行.append(行)
 
-        # 第二步：将去重后的纯净数据覆盖写入
         with open(目标文件, 'w', newline='', encoding='utf-8-sig') as 文件:
             写入器 = csv.writer(文件)
             写入器.writerow(表头)
             写入器.writerows(去重后的行)
-
-        print(f"去重完成！去除冗余后，当前 {目标文件} 中共保留 {len(去重后的行)} 条有效记录。")
+        print(f"去重完成！去除冗余后，当前共保留 {len(去重后的行)} 条有效记录。")
     except Exception as e:
         print(f"去重操作发生异常: {e}")
 
 def 主程序():
+    程序启动时间 = time.time()  # 记录起跑时间
     下载并生成域名列表()
 
     with open(输入文件, 'r', encoding='utf-8') as 文件:
@@ -188,42 +167,61 @@ def 主程序():
     当前结束位置 = min(当前起始位置 + 每次检测数量, 总数量)
     待检测列表 = 域名列表[当前起始位置:当前结束位置]
 
-    print(f"====== 开始执行极速 Cloudflare 检测 ======")
+    print(f"====== 开始执行专业级 Cloudflare 扫描 ======")
     print(f"总计资源库: {总数量} 个网址")
-    print(f"本次检测区间: 第 {当前起始位置 + 1} 个 ~ 第 {当前结束位置} 个")
-    print(f"实际并发任务: {len(待检测列表)} 个")
-    print(f"单网址检测超时: 500ms")
-    print(f"==========================================")
+    print(f"本次分配区间: 第 {当前起始位置 + 1} 个 ~ 第 {当前结束位置} 个")
+    print(f"实际待测任务: {len(待检测列表)} 个")
+    print(f"安全机制: 500ms硬超时 + {分块大小}个/区块断点存档 + {最大安全运行时间}秒软超时结束")
+    print(f"=============================================")
 
-    结果列表 = []
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=最大并发数) as 执行器:
-        任务集合 = [执行器.submit(检测_cloudflare, 域名) for 域名 in 待检测列表]
-        
-        for 任务 in concurrent.futures.as_completed(任务集合):
-            结果 = 任务.result()
-            if 结果 and 结果[1] == "是":
-                结果列表.append(结果)
-
-    # 写入本次新增结果
     写入模式 = 'w' if 当前起始位置 == 0 and not os.path.exists(输出文件) else 'a'
-    with open(输出文件, 写入模式, newline='', encoding='utf-8-sig') as 结果文件:
-        写入器 = csv.writer(结果文件)
-        if 写入模式 == 'w':
-            写入器.writerow(['域名', '是否使用Cloudflare', 'HTTP状态码', '备注信息'])
-        if 结果列表:
-            写入器.writerows(结果列表)
-        
-    # 保存进度
-    保存当前进度(当前结束位置)
-    
-    # 【新增动作】执行全局去重
+    已处理总数 = 0
+    本次新增有效记录数 = 0
+
+    # 核心：将大任务列表切割成多个小区块，按区块执行并存档
+    for i in range(0, len(待检测列表), 分块大小):
+        当前区块列表 = 待检测列表[i:i + 分块大小]
+        区块结果 = []
+
+        # 执行当前区块的并发检测
+        with concurrent.futures.ThreadPoolExecutor(max_workers=最大并发数) as 执行器:
+            任务集合 = [执行器.submit(检测_cloudflare, 域名) for 域名 in 当前区块列表]
+            for 任务 in concurrent.futures.as_completed(任务集合):
+                结果 = 任务.result()
+                if 结果 and 结果[1] == "是":
+                    区块结果.append(结果)
+
+        # 当前区块完成，立刻落盘保存结果
+        with open(输出文件, 写入模式, newline='', encoding='utf-8-sig') as 结果文件:
+            写入器 = csv.writer(结果文件)
+            if 写入模式 == 'w':
+                写入器.writerow(['域名', '是否使用Cloudflare', 'HTTP状态码', '备注信息'])
+                写入模式 = 'a'  # 表头写完后，后续区块全部变为追加模式
+            if 区块结果:
+                写入器.writerows(区块结果)
+                本次新增有效记录数 += len(区块结果)
+
+        # 立刻更新并固化断点进度
+        已处理总数 += len(当前区块列表)
+        当前安全进度 = 当前起始位置 + 已处理总数
+        保存当前进度(当前安全进度)
+        print(f"\n[存档点] 已安全保存阶段进度: {当前安全进度} / {总数量}\n")
+
+        # 【核心防御】：进行时间感知检查
+        已耗时 = time.time() - 程序启动时间
+        if 已耗时 >= 最大安全运行时间:
+            print(f"⚠️ [防溢出机制] 脚本运行已达 {已耗时:.1f} 秒，接近系统时间极限！")
+            print("⚠️ 触发优雅软超时，已主动切断后续任务队列，准备安全移交 Git 推送...")
+            break
+
+    # 无论是否触发超时，结束后都执行一遍全局去重
     结果文件去重(输出文件)
     
-    print(f"====== 本次检测任务结束 ======")
-    print(f"本次运行发现接入 Cloudflare 的新目标: {len(结果列表)} 个")
-    print(f"数据已同步至: {输出文件}")
-    print(f"当前进度已更新为: {当前结束位置}")
+    最终进度 = 获取当前进度()
+    print(f"====== 本次检测任务完美收官 ======")
+    print(f"总耗时: {time.time() - 程序启动时间:.1f} 秒")
+    print(f"本次运行新增记录: {本次新增有效记录数} 个")
+    print(f"当前整体进度已更新至: {最终进度}")
 
 if __name__ == "__main__":
     主程序()
