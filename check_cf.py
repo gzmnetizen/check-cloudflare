@@ -35,6 +35,7 @@ def 下载并生成域名列表():
     try:
         url = "https://tranco-list.eu/top-1m.csv.zip"
         请求头 = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        # 下载列表文件不受 500ms 限制，保持 30 秒超时以确保下载完整
         响应 = requests.get(url, headers=请求头, stream=True, timeout=30)
         响应.raise_for_status()
 
@@ -65,18 +66,18 @@ def 下载并生成域名列表():
         print(f"自动下载域名列表失败: {错误}")
         exit(1)
 
-def 发送独立安全请求(url):
+def 发送极速安全请求(url):
     """
-    核心修复：抛弃 Session 连接池，执行完全独立的请求，防止底层死锁。
-    加入 for 循环替代原有的 HTTPAdapter 重试策略。
+    极速侦测模式：最大等待时间 500ms (0.5秒)。
+    超时即抛弃，不做任何过多停留，确保大部队进度。
     """
     for 尝试次数 in range(2): # 总共尝试 2 次 (失败重试 1 次)
         try:
-            # stream=True 阻断大文件，timeout 分离连接与读取时间
-            响应 = requests.get(url, headers=全局请求头, timeout=(5, 10), allow_redirects=True, verify=False, stream=True)
+            # 【核心修改】：将 timeout 设置为 0.5，严格控制单次网络通讯上限为 500ms
+            响应 = requests.get(url, headers=全局请求头, timeout=0.5, allow_redirects=True, verify=False, stream=True)
             return 响应
         except requests.exceptions.RequestException:
-            pass # 发生超时或连接错误则进入下一次尝试
+            pass # 发生超时(超过500ms)或连接错误则直接进入下一次尝试或放弃
     return None
 
 def 检测_cloudflare(域名):
@@ -92,20 +93,18 @@ def 检测_cloudflare(域名):
     http_链接 = f"http://{域名}"
     
     采用协议 = "HTTPS"
-    响应 = 发送独立安全请求(https_链接)
+    响应 = 发送极速安全请求(https_链接)
     
     if 响应 is None:
-        # 如果 HTTPS 彻底失败，降级尝试 HTTP
-        响应 = 发送独立安全请求(http_链接)
+        # 如果 HTTPS 极速探测失败，降级尝试 HTTP
+        响应 = 发送极速安全请求(http_链接)
         采用协议 = "HTTP"
 
     if 响应 is None:
-        print(f"检测失败: {域名} -> 无法连接或请求超时")
-        return [域名, "未知", "无", "请求超时或连接重置"]
+        print(f"自动跳过: {域名} -> 响应超过 500ms 或无法连接")
+        return [域名, "未知", "无", "请求超时"]
 
     响应头小写 = {k.lower(): v for k, v in 响应.headers.items()}
-
-    # 核心：必须显式关闭响应流，释放系统级 Socket，严防内存泄露
     响应.close()
 
     使用了_cf = "否"
@@ -151,18 +150,16 @@ def 主程序():
     当前结束位置 = min(当前起始位置 + 每次检测数量, 总数量)
     待检测列表 = 域名列表[当前起始位置:当前结束位置]
 
-    print(f"====== 开始执行 Cloudflare 检测 ======")
+    print(f"====== 开始执行极速 Cloudflare 检测 ======")
     print(f"总计资源库: {总数量} 个网址")
     print(f"本次检测区间: 第 {当前起始位置 + 1} 个 ~ 第 {当前结束位置} 个")
     print(f"实际并发任务: {len(待检测列表)} 个")
-    print(f"======================================")
+    print(f"单网址检测超时: 500ms")
+    print(f"==========================================")
 
     结果列表 = []
     
-    # 启动高并发检测
     with concurrent.futures.ThreadPoolExecutor(max_workers=最大并发数) as 执行器:
-        # 核心修复：弃用 executor.map() 队列，改用 as_completed()
-        # 彻底打破顺序输出机制，谁先检测完谁先输出，杜绝“一颗老鼠屎（卡死的网站）堵死整条流水线”
         任务集合 = [执行器.submit(检测_cloudflare, 域名) for 域名 in 待检测列表]
         
         for 任务 in concurrent.futures.as_completed(任务集合):
