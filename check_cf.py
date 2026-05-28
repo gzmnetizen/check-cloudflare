@@ -108,12 +108,12 @@ def 检测_cloudflare(域名):
     采用协议 = "HTTPS"
 
     try:
-        # 优先尝试 HTTPS，且 verify=False 忽略证书过期导致的拦截
-        响应 = 会话.get(https_链接, timeout=10, allow_redirects=True, verify=False)
+        # 【核心修复】：增加 stream=True 防大文件下载假死，timeout 拆分为(连接5秒, 响应10秒)
+        响应 = 会话.get(https_链接, timeout=(5, 10), allow_redirects=True, verify=False, stream=True)
     except requests.exceptions.RequestException:
         # 如果 HTTPS 失败（比如未开启 443 端口），尝试降级为 HTTP
         try:
-            响应 = 会话.get(http_链接, timeout=10, allow_redirects=True, verify=False)
+            响应 = 会话.get(http_链接, timeout=(5, 10), allow_redirects=True, verify=False, stream=True)
             采用协议 = "HTTP"
         except requests.exceptions.RequestException:
             # 双重失败则判定为无法连接
@@ -126,6 +126,9 @@ def 检测_cloudflare(域名):
     # 提取头信息，全部转为小写比对
     响应头 = 响应.headers
     响应头小写 = {k.lower(): v for k, v in 响应头.items()}
+
+    # 【核心修复】：显式关闭请求流，避免连接池耗尽导致高并发线程死锁
+    响应.close()
 
     使用了_cf = "否"
     if 'server' in 响应头小写 and 'cloudflare' in 响应头小写['server'].lower():
