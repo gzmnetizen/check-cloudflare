@@ -5,7 +5,7 @@ import csv
 import os
 import zipfile
 import io
-import time  # 新增时间模块，用于软超时控制
+import time  
 
 # 禁用 requests 忽略 SSL 验证时产生的安全警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -15,14 +15,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 输出文件 = 'result.csv'
 进度文件 = 'progress.txt'
 
-# 【策略升级】可以将每次检测数量设置极大，因为有了软超时防御
 每次检测数量 = 20000  
-# 【防御策略1】分块存档：每处理完 1000 个域名就保存一次进度到硬盘，防崩溃
 分块大小 = 1000 
-# 【防御策略2】脚本最大安全存活时间：8.5分钟 (510秒)，留1.5分钟给Git推送
 最大安全运行时间 = 510 
 
-初始下载数量 = 1000000
+初始下载数量 = 100000
 最大并发数 = 30 
 
 # 全局请求头设置
@@ -33,7 +30,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 def 下载并生成域名列表():
     if os.path.exists(输入文件):
         return
-
     print(f"未找到 {输入文件}，正在自动下载全球顶级域名列表 (Tranco Top 1M)...")
     try:
         url = "https://tranco-list.eu/top-1m.csv.zip"
@@ -64,12 +60,14 @@ def 下载并生成域名列表():
         exit(1)
 
 def 发送极速安全请求(url):
-    """极速侦测：最大等待时间 500ms。超时即抛弃。"""
+    """极速侦测：最大等待时间 500ms。捕获一切底层解析错误。"""
     for 尝试次数 in range(2): 
         try:
             响应 = requests.get(url, headers=全局请求头, timeout=0.5, allow_redirects=True, verify=False, stream=True)
             return 响应
-        except requests.exceptions.RequestException:
+        except Exception: 
+            # 【修复点2：战术级拦截】将 RequestException 扩大为通用的 Exception。
+            # 无论是 LocationParseError 还是 InvalidSchema，统统按失败处理，不抛出异常。
             pass 
     return None
 
@@ -77,7 +75,10 @@ def 检测_cloudflare(域名):
     if not 域名:
         return None
 
-    域名 = 域名.replace('http://', '').replace('https://', '')
+    # 【修复点1：输入端清洗】深度清理域名，去除前导点号(.)、斜杠(/)和星号(*)
+    域名 = 域名.replace('http://', '').replace('https://', '').strip(' ./*')
+    if not 域名:
+        return None
     
     https_链接 = f"https://{域名}"
     http_链接 = f"http://{域名}"
@@ -90,8 +91,8 @@ def 检测_cloudflare(域名):
         采用协议 = "HTTP"
 
     if 响应 is None:
-        print(f"自动跳过: {域名} -> 响应超过 500ms 或无法连接")
-        return [域名, "未知", "无", "请求超时"]
+        print(f"自动跳过: {域名} -> 响应超时或由于畸形网址无法连接")
+        return [域名, "未知", "无", "无法连接"]
 
     响应头小写 = {k.lower(): v for k, v in 响应.headers.items()}
     响应.close()
@@ -150,7 +151,7 @@ def 结果文件去重(目标文件):
         print(f"去重操作发生异常: {e}")
 
 def 主程序():
-    程序启动时间 = time.time()  # 记录起跑时间
+    程序启动时间 = time.time()  
     下载并生成域名列表()
 
     with open(输入文件, 'r', encoding='utf-8') as 文件:
@@ -178,43 +179,41 @@ def 主程序():
     已处理总数 = 0
     本次新增有效记录数 = 0
 
-    # 核心：将大任务列表切割成多个小区块，按区块执行并存档
     for i in range(0, len(待检测列表), 分块大小):
         当前区块列表 = 待检测列表[i:i + 分块大小]
         区块结果 = []
 
-        # 执行当前区块的并发检测
         with concurrent.futures.ThreadPoolExecutor(max_workers=最大并发数) as 执行器:
             任务集合 = [执行器.submit(检测_cloudflare, 域名) for 域名 in 当前区块列表]
             for 任务 in concurrent.futures.as_completed(任务集合):
-                结果 = 任务.result()
-                if 结果 and 结果[1] == "是":
-                    区块结果.append(结果)
+                # 【修复点3：战略级隔离】为任务结果读取增加异常护盾
+                try:
+                    结果 = 任务.result()
+                    if 结果 and 结果[1] == "是":
+                        区块结果.append(结果)
+                except Exception as 错误:
+                    print(f"警告：单个检测任务发生致命崩溃已隔离处理")
 
-        # 当前区块完成，立刻落盘保存结果
         with open(输出文件, 写入模式, newline='', encoding='utf-8-sig') as 结果文件:
             写入器 = csv.writer(结果文件)
             if 写入模式 == 'w':
                 写入器.writerow(['域名', '是否使用Cloudflare', 'HTTP状态码', '备注信息'])
-                写入模式 = 'a'  # 表头写完后，后续区块全部变为追加模式
+                写入模式 = 'a'  
             if 区块结果:
                 写入器.writerows(区块结果)
                 本次新增有效记录数 += len(区块结果)
 
-        # 立刻更新并固化断点进度
         已处理总数 += len(当前区块列表)
         当前安全进度 = 当前起始位置 + 已处理总数
         保存当前进度(当前安全进度)
         print(f"\n[存档点] 已安全保存阶段进度: {当前安全进度} / {总数量}\n")
 
-        # 【核心防御】：进行时间感知检查
         已耗时 = time.time() - 程序启动时间
         if 已耗时 >= 最大安全运行时间:
             print(f"⚠️ [防溢出机制] 脚本运行已达 {已耗时:.1f} 秒，接近系统时间极限！")
             print("⚠️ 触发优雅软超时，已主动切断后续任务队列，准备安全移交 Git 推送...")
             break
 
-    # 无论是否触发超时，结束后都执行一遍全局去重
     结果文件去重(输出文件)
     
     最终进度 = 获取当前进度()
