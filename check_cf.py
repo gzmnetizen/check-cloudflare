@@ -15,9 +15,9 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 输出文件 = 'result.csv'
 进度文件 = 'progress.txt'
 
-每次检测数量 = 20000  
+每次检测数量 = 50000  
 分块大小 = 1000 
-最大安全运行时间 = 510 
+最大安全运行时间 = 1010 
 
 初始下载数量 = 100000
 最大并发数 = 30 
