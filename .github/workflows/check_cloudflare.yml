@@ -13,7 +13,7 @@ jobs:
   run-detection:
     runs-on: ubuntu-latest
     # 【新增硬性约束】：设定工作流最大运行时间为 20 分钟
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
     - name: 检出仓库代码
