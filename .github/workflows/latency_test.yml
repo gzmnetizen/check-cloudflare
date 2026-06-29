@@ -1,0 +1,32 @@
+name: Latency Test for Uncommon Domains
+
+on:
+  schedule:
+    - cron: '0 3 * * *' # 每天 UTC 时间 3:00 执行（可自行修改）
+  workflow_dispatch: # 支持在 Actions 页面手动点击运行
+
+jobs:
+  test-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 赋予写入权限以允许推送到仓库
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Run Latency Test Script
+        run: python latency_test.py
+
+      - name: Commit and Push ip.txt
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add ip.txt
+          # 仅在 ip.txt 发生变动时提交，避免空提交导致工作流报错
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update ip.txt with latest latency tests" && git push)
