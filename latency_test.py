@@ -3,8 +3,7 @@ import random
 import socket
 import time
 
-# 常见域名黑名单（可根据你的标准自行增删）
-COMMON_DOMAINS = # 常见域名黑名单（扩展至前100个常见域名，可根据你的标准自行增删）
+# 常见域名黑名单（扩展至前100个常见域名，可根据你的标准自行增删）
 COMMON_DOMAINS = {
     'google.com', 'youtube.com', 'facebook.com', 'baidu.com', 'wikipedia.org',
     'qq.com', 'taobao.com', 'yahoo.com', 'tmall.com', 'amazon.com',
