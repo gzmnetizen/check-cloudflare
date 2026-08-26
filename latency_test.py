@@ -88,7 +88,7 @@ def main():
     results.sort(key=lambda x: x[1])
     
     # 仅保留延时最快的前5个
-    top_5_results = results[:5]
+    top_5_results = results[:3]
     
     # 结果写入 ip.txt，仅保存域名
     with open('ip.txt', mode='w', encoding='utf-8') as f:
